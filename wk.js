@@ -11039,7 +11039,6 @@ function AudioHandler() {
 let snes = null;
 let running = false;
 let noPpu = false;
-
 // Shared buffers from main
 let pixels, audioL, audioR, idx;
 let width = 512, height = 480, samplesPerFrame = 3200, ringSize;
