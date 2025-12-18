@@ -1,4 +1,88 @@
-   /*
+<!DOCTYPE html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <title>SNES</title>
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <link rel="icon" href="nes.png" type="image/png">
+    <style>
+      :root {
+        color-scheme: light dark;
+      }
+      body {
+        background:rgb(0, 0, 0);
+        font-family: ui-sans-serif, system-ui;
+        margin: 16px;
+      }
+      header {
+        display: flex;
+        gap: 12px;
+        align-items: center;
+        margin-bottom: 12px;
+      }
+      canvas{
+        
+        height: 100%;              /* コンテナ幅に合わせる */
+      aspect-ratio: 256 / 240;  /* 内部解像度の比率を維持 */
+        image-rendering: pixelated;
+        border: 1px solid #000000;
+        background: #000;
+      }
+      .row {
+        padding-top:0px;
+height:83vh;
+justify-content: center; 
+        display: flex;
+        gap: 12px;
+        align-items: center;
+      }
+      .mono {
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      }
+      small {
+        opacity: 0.7;
+      }
+      #romSelect{
+display:none;
+}
+button{
+padding:10px;
+background:rgb(0, 0, 0);
+color:rgb(255, 255, 255);
+border:1px solid rgb(255, 255, 255);
+}
+
+    </style>
+  </head>
+  <body>
+   
+    <header>
+      <select id="romSelect">
+  <option value="">-- サーバーROMを選択 --</option>
+  <option value="/roms/game1.nes">game1.nes</option>
+  <option value="/roms/game2.nes">game2.nes</option>
+</select>
+
+      <input id="romInput" type="file" accept=".sfc" />
+      <button id="fullscreenBtn">Fullscreen</button>
+
+     
+      <input id="ishirom" type="checkbox"> HiROM
+  <button id="pause">Pause</button>
+  <button id="reset">Reset</button>
+  <button id="hardreset">Power cycle</button>
+  <button id="runframe">Run 1 frame</button><br>
+    </header>
+    <div class="row">
+      <canvas id="screen" width="256" height="240"></canvas>
+      
+      <div>
+        
+        
+      </div>
+    </div>
+<script>
+    /*
  Copyright (c) 2013 Gildas Lormeau. All rights reserved.
 
  Redistribution and use in source and binary forms, with or without
@@ -11035,67 +11119,100 @@ function AudioHandler() {
     }
   }
 }
-// snesWorker.js
-importScripts("snes.js"); // your Snes class and deps
+// main.js
+const c = el("screen");
+c.width = 512;
+c.height = 480;
+const ctx = c.getContext("2d");
 
-let snes = null;
-let running = false;
-let noPpu = false;
+// Shared pixel buffer
+const width = 512, height = 480;
+const sabPixels = new SharedArrayBuffer(width * height * 4); // RGBA
+const pixels = new Uint8ClampedArray(sabPixels);
+const imgData = new ImageData(pixels, width, height);
 
-// Shared buffers from main
-let pixels, audioL, audioR, idx;
-let width = 512, height = 480, samplesPerFrame = 3200, ringSize;
+// Audio ring buffers (example sizes)
+const samplesPerFrame = 3200; // 3200 @ ~32kHz, adjust to your APU
+const ringSize = samplesPerFrame * 4; // few frames worth
+const sabAudioL = new SharedArrayBuffer(ringSize * 4);
+const sabAudioR = new SharedArrayBuffer(ringSize * 4);
+const sabIdx    = new SharedArrayBuffer(8); // write/read indices (Int32)
+const audioL = new Float32Array(sabAudioL);
+const audioR = new Float32Array(sabAudioR);
+const idx    = new Int32Array(sabIdx); // [writeIdx, readIdx]
 
-onmessage = (e) => {
-  const { type, rom, hiRom } = e.data;
-  if (type === "init") {
-    const { sabPixels, sabAudioL, sabAudioR, sabIdx, w, h, spf, rsize } = e.data;
-    pixels = new Uint8ClampedArray(sabPixels);
-    audioL = new Float32Array(sabAudioL);
-    audioR = new Float32Array(sabAudioR);
-    idx    = new Int32Array(sabIdx);
-    width = w; height = h; samplesPerFrame = spf; ringSize = rsize;
-  } else if (type === "load-rom") {
-    snes = new Snes();
-    if (snes.loadRom(new Uint8Array(rom), hiRom)) {
-      snes.reset(true);
-      running = true;
-    }
-  } else if (type === "run-frame" && running) {
-    runFrame();
-  } else if (type === "pause") {
-    running = false;
-  } else if (type === "resume") {
-    running = true;
-  } else if (type === "pad1-down") {
-    snes.setPad1ButtonPressed(e.data.id);
-  } else if (type === "pad1-up") {
-    snes.setPad1ButtonReleased(e.data.id);
+// Worker
+const worker = new Worker("wk.js");
+let loaded = false, paused = false, pausedInBg = false;
+
+worker.onmessage = (e) => {
+  const { type } = e.data;
+  if (type === "frame-ready") {
+    // Draw without copying (pixels already updated by worker)
+    ctx.putImageData(imgData, 0, 0);
+    // Signal the worker to proceed to next frame on next rAF
+    if (!paused) requestAnimationFrame(() => worker.postMessage({ type: "run-frame" }));
   }
 };
 
-function runFrame() {
-  // Execute emulation for one video frame
-  snes.runFrame(noPpu);
-
-  // Pixels: write directly to shared RGBA
-  snes.setPixels(pixels); // expects Uint8ClampedArray target
-
-  // Audio: append to ring buffer
-  const w = Atomics.load(idx, 0); // writeIdx
-  const L = snes.apuSamplesL; // Float32Array produced by Snes
-  const R = snes.apuSamplesR;
-  const n = L.length; // should equal samplesPerFrame
-
-  // simple ring write
-  for (let i = 0; i < n; i++) {
-    const pos = (w + i) % ringSize;
-    audioL[pos] = L[i];
-    audioR[pos] = R[i];
+function loadRom(romArr) {
+  const hiRom = el("ishirom").checked;
+  worker.postMessage({ type: "load-rom", rom: romArr, hiRom }, [romArr.buffer]); // transfer ROM
+  if (!loaded && !paused) {
+    requestAnimationFrame(() => worker.postMessage({ type: "run-frame" }));
   }
-  Atomics.store(idx, 0, (w + n) % ringSize);
-  Atomics.notify(idx, 0, 1); // wake audio worklet if it waits on idx
-
-  // Signal frame ready without sending pixel data
-  postMessage({ type: "frame-ready" });
+  loaded = true;
 }
+
+// hook up UI
+el("romInput").onchange = async (e) => {
+  const file = e.target.files[0];
+  const buf = new Uint8Array(await file.arrayBuffer());
+  // zip処理が必要ならここで展開して romArr を用意
+  loadRom(buf);
+};
+
+el("pause").onclick = function () {
+  paused = !paused;
+  el("pause").textContent = paused ? "Continue" : "Pause";
+  worker.postMessage({ type: paused ? "pause" : "resume" });
+  if (!paused) requestAnimationFrame(() => worker.postMessage({ type: "run-frame" }));
+};
+
+document.onvisibilitychange = function () {
+  if (document.hidden && !paused && loaded) {
+    el("pause").click(); pausedInBg = true;
+  } else if (!document.hidden && pausedInBg && loaded) {
+    el("pause").click(); pausedInBg = false;
+  }
+};
+
+// input → worker
+const controlsP1 = { z:0,a:1,shift:2,enter:3,arrowup:4,arrowdown:5,arrowleft:6,arrowright:7,x:8,s:9,d:10,c:11 };
+window.onkeydown = (e) => {
+  const id = controlsP1[e.key.toLowerCase()];
+  if (id !== undefined) { e.preventDefault(); worker.postMessage({ type:"pad1-down", id }); }
+};
+window.onkeyup = (e) => {
+  const id = controlsP1[e.key.toLowerCase()];
+  if (id !== undefined) { e.preventDefault(); worker.postMessage({ type:"pad1-up", id }); }
+};
+
+// init audio worklet and pass SABs (not shown fully)
+audioHandler.initWorklet({ sabAudioL, sabAudioR, sabIdx, ringSize });
+// main.js (追加)
+worker.postMessage({
+  type: "init",
+  sabPixels,
+  sabAudioL,
+  sabAudioR,
+  sabIdx,
+  w: width,
+  h: height,
+  spf: samplesPerFrame,
+  rsize: ringSize
+});
+
+     </script>
+  </body>
+</html>
