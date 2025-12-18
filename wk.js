@@ -11035,8 +11035,6 @@ function AudioHandler() {
     }
   }
 }
-// snesWorker.js
-importScripts("snes.js"); // your Snes class and deps
 
 let snes = null;
 let running = false;
