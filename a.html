@@ -11119,56 +11119,58 @@ function AudioHandler() {
     }
   }
 }
-// main.js
 const c = el("screen");
 c.width = 512;
 c.height = 480;
 const ctx = c.getContext("2d");
 
-// Shared pixel buffer
+// Pixel buffer (普通の ArrayBuffer)
 const width = 512, height = 480;
-const sabPixels = new SharedArrayBuffer(width * height * 4); // RGBA
-const pixels = new Uint8ClampedArray(sabPixels);
+const pixels = new Uint8ClampedArray(width * height * 4);
 const imgData = new ImageData(pixels, width, height);
 
-// Audio ring buffers (example sizes)
-const samplesPerFrame = 3200; // 3200 @ ~32kHz, adjust to your APU
-const ringSize = samplesPerFrame * 4; // few frames worth
-const sabAudioL = new SharedArrayBuffer(ringSize * 4);
-const sabAudioR = new SharedArrayBuffer(ringSize * 4);
-const sabIdx    = new SharedArrayBuffer(8); // write/read indices (Int32)
-const audioL = new Float32Array(sabAudioL);
-const audioR = new Float32Array(sabAudioR);
-const idx    = new Int32Array(sabIdx); // [writeIdx, readIdx]
+// Audio ring buffers (普通の ArrayBuffer)
+const samplesPerFrame = 3200; // 例: 32kHz
+const ringSize = samplesPerFrame * 4;
+const audioL = new Float32Array(ringSize);
+const audioR = new Float32Array(ringSize);
+let idx = { write: 0, read: 0 }; // インデックスは単純なオブジェクトで管理
 
 // Worker
 const worker = new Worker("wk.js");
 let loaded = false, paused = false, pausedInBg = false;
 
 worker.onmessage = (e) => {
-  const { type } = e.data;
+  const { type, data } = e.data;
   if (type === "frame-ready") {
-    // Draw without copying (pixels already updated by worker)
+    // Workerから受け取ったピクセルデータをコピー
+    pixels.set(data.pixels);
     ctx.putImageData(imgData, 0, 0);
-    // Signal the worker to proceed to next frame on next rAF
-    if (!paused) requestAnimationFrame(() => worker.postMessage({ type: "run-frame" }));
+
+    // Audioデータもコピー
+    audioL.set(data.audioL);
+    audioR.set(data.audioR);
+
+    if (!paused) {
+      requestAnimationFrame(() => worker.postMessage({ type: "run-frame" }));
+    }
   }
 };
 
 function loadRom(romArr) {
   const hiRom = el("ishirom").checked;
-  worker.postMessage({ type: "load-rom", rom: romArr, hiRom }, [romArr.buffer]); // transfer ROM
+  // ROMを転送
+  worker.postMessage({ type: "load-rom", rom: romArr, hiRom }, [romArr.buffer]);
   if (!loaded && !paused) {
     requestAnimationFrame(() => worker.postMessage({ type: "run-frame" }));
   }
   loaded = true;
 }
 
-// hook up UI
+// UI
 el("romInput").onchange = async (e) => {
   const file = e.target.files[0];
   const buf = new Uint8Array(await file.arrayBuffer());
-  // zip処理が必要ならここで展開して romArr を用意
   loadRom(buf);
 };
 
@@ -11176,7 +11178,9 @@ el("pause").onclick = function () {
   paused = !paused;
   el("pause").textContent = paused ? "Continue" : "Pause";
   worker.postMessage({ type: paused ? "pause" : "resume" });
-  if (!paused) requestAnimationFrame(() => worker.postMessage({ type: "run-frame" }));
+  if (!paused) {
+    requestAnimationFrame(() => worker.postMessage({ type: "run-frame" }));
+  }
 };
 
 document.onvisibilitychange = function () {
@@ -11187,34 +11191,27 @@ document.onvisibilitychange = function () {
   }
 };
 
-// input → worker
+// 入力イベントをWorkerへ
 const controlsP1 = { z:0,a:1,shift:2,enter:3,arrowup:4,arrowdown:5,arrowleft:6,arrowright:7,x:8,s:9,d:10,c:11 };
 window.onkeydown = (e) => {
   const id = controlsP1[e.key.toLowerCase()];
-  if (id !== undefined) { e.preventDefault(); worker.postMessage({ type:"pad1-down", id }); }
+  if (id !== undefined) {
+    e.preventDefault();
+    worker.postMessage({ type:"pad1-down", id });
+  }
 };
 window.onkeyup = (e) => {
   const id = controlsP1[e.key.toLowerCase()];
-  if (id !== undefined) { e.preventDefault(); worker.postMessage({ type:"pad1-up", id }); }
+  if (id !== undefined) {
+    e.preventDefault();
+    worker.postMessage({ type:"pad1-up", id });
+  }
 };
 
-// init audio worklet and pass SABs (not shown fully)
-audioHandler.initWorklet({ sabAudioL, sabAudioR, sabIdx, ringSize });
-// main.js (追加)
-worker.postMessage({
-  type: "init",
-  sabPixels,
-  sabAudioL,
-  sabAudioR,
-  sabIdx,
-  w: width,
-  h: height,
-  spf: samplesPerFrame,
-  rsize: ringSize
-});
 function el(id) {
   return document.getElementById(id);
 }
+
      </script>
   </body>
 </html>
